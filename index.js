@@ -2,6 +2,7 @@ const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder
 require('dotenv').config();
 
 const Database = require('./database.js');
+const init = require('./setup.js');
 const db = new Database();
 
 const client = new Client({
@@ -965,7 +966,14 @@ client.on('interactionCreate', async (interaction) => {
 
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
-    
+   console.log('📦 Initializing database...');
+        await db.initialize();
+        console.log('✅ Database initialized');
+        
+        // Step 2: Then run setup to ensure data exists
+        console.log('📋 Checking roster data...');
+        await init(db);  // Pass the db instance to setup
+        console.log('✅ Setup complete');
     const channel = await client.channels.fetch(process.env.ROSTER_CHANNEL_ID);
     
     // Clear the channel (optional - be careful!)

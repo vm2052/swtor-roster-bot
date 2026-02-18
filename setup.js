@@ -1,10 +1,11 @@
 // setup.js - Run this once to load your existing roster
-const Database = require('./database.js');
-const db = new Database();
+//const Database = require('./database.js');
 
-async function setup() {
+//const Database = require('./database.js');
+async function init(db) {
     console.log('🔄 Setting up initial roster...');
-
+   // const db = new Database();
+    //await db.initialize();
     // Clear existing data (optional - comment out if you want to keep existing)
     // await db.db.run('DELETE FROM characters');
     // await db.db.run('DELETE FROM ranks');
@@ -213,4 +214,4 @@ console.log('✅ 6');
     console.log('🎉 You can now start the bot and it will show the full roster!');
 }
 
-setup().catch(console.error);
+module.exports = init;
