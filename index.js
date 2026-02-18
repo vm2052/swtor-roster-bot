@@ -312,22 +312,22 @@ client.on('interactionCreate', async (interaction) => {
 
             // REMOVE MEMBER
             else if (interaction.customId === 'remove_member') {
-                const modal = new ModalBuilder()
-                    .setCustomId('remove_member_modal')
-                    .setTitle('Remove Member');
+                    const modal = new ModalBuilder()
+                        .setCustomId('remove_member_modal')
+                        .setTitle('Remove Member');
 
-                const nameInput = new TextInputBuilder()
-                    .setCustomId('member_name')
-                    .setLabel("Member's Name")
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
-                    .setPlaceholder('Enter the exact name to remove');
+                    const nameInput = new TextInputBuilder()
+                        .setCustomId('member_name')
+                        .setLabel("Member's Name")
+                        .setStyle(TextInputStyle.Short)
+                        .setRequired(true)
+                        .setPlaceholder('Enter the exact name to remove');
 
-                const row = new ActionRowBuilder().addComponents(nameInput);
-                modal.addComponents(row);
-                
-                await interaction.showModal(modal);
-            }
+                    const row = new ActionRowBuilder().addComponents(nameInput);
+                    modal.addComponents(row);
+                    
+                    await interaction.showModal(modal);
+                }
 
             // MANAGE BRANCHES
             else if (interaction.customId === 'manage_branches') {
@@ -884,27 +884,39 @@ client.on('interactionCreate', async (interaction) => {
                 });
             }
 
-            // REMOVE MEMBER
-            else if (interaction.customId === 'remove_member_modal') {
-                const name = interaction.fields.getTextInputValue('member_name');
-                
-                // We need to find which branch this member was in to update it
-                // This requires a new database method - for now, update all branches
-                const changes = await db.removeCharacter(name);
-                
-                if (changes > 0) {
-                    await updateAllBranchMessages();
-                    await interaction.reply({
-                        content: `✅ Removed **${name}** from roster`,
-                        ephemeral: true
-                    });
-                } else {
-                    await interaction.reply({
-                        content: `❌ Could not find **${name}**`,
-                        ephemeral: true
-                    });
+           // REMOVE MEMBER MODAL HANDLER
+                else if (interaction.customId === 'remove_member_modal') {
+                    // Defer the reply immediately to prevent timeout
+                    await interaction.deferReply({ ephemeral: true });
+                    
+                    const name = interaction.fields.getTextInputValue('member_name');
+                    
+                    try {
+                        // We need to find which branch this member was in to update only that branch
+                        // First, get all characters to find the member
+                        const allCharacters = await db.getAllCharacters();
+                        const member = allCharacters.find(c => c.name === name);
+                        
+                        if (!member) {
+                            await interaction.editReply({ content: `❌ Could not find **${name}**` });
+                            return;
+                        }
+                        
+                        // Remove the character
+                        const changes = await db.removeCharacter(name);
+                        
+                        if (changes > 0) {
+                            // Only update the specific branch this member was in
+                            await updateBranchMessage(member.branch_id);
+                            await interaction.editReply({ content: `✅ Removed **${name}** from roster` });
+                        } else {
+                            await interaction.editReply({ content: `❌ Could not find **${name}**` });
+                        }
+                    } catch (error) {
+                        console.error('Error removing member:', error);
+                        await interaction.editReply({ content: '❌ An error occurred while removing the member' });
+                    }
                 }
-            }
         }
 
         // ========== CONFIRMATION BUTTONS ==========
