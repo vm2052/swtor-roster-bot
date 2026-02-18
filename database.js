@@ -23,7 +23,7 @@ class Database {
         }
     }
 
-   async ensureDatabaseExists() {
+ async ensureDatabaseExists() {
     const connectionString = process.env.DATABASE_URL;
     
     if (!connectionString) {
@@ -32,84 +32,81 @@ class Database {
 
     console.log('📦 DATABASE_URL:', connectionString.replace(/:[^:@]{1,100}@/, ':****@'));
     
-    // Parse the connection string manually
-    // Format: postgresql://username:password@host:port/database
-    const regex = /postgresql:\/\/([^:]+):([^@]+)@([^:]+):(\d+)\/([^?]+)/;
-    const matches = connectionString.match(regex);
-    
-    if (!matches) {
-        console.error('Could not parse DATABASE_URL. Expected format: postgresql://user:pass@host:port/database');
-        console.error('Got:', connectionString);
-        throw new Error('Invalid DATABASE_URL format');
-    }
-    
-    const [, user, password, host, port, database] = matches;
-    
-    console.log(`📦 Parsed connection: ${user}@${host}:${port}, database: ${database}`);
-    
-    // Connect to default 'postgres' database to check/create our database
-    const client = new Client({
-        host: host,
-        port: parseInt(port),
-        user: user,
-        password: password,
-        database: 'postgres'
-    });
-
+    // Parse the connection string using URL class
     try {
-        console.log('📦 Connecting to default "postgres" database...');
-        await client.connect();
-        console.log('✅ Connected to PostgreSQL server');
+        const url = new URL(connectionString);
         
-        // Check if our target database exists
-        const checkResult = await client.query(
-            'SELECT 1 FROM pg_database WHERE datname = $1',
-            [database]
-        );
+        // Extract components
+        const user = url.username;
+        const password = url.password;
+        const host = url.hostname;
+        const port = url.port || '5432';
+        // Remove leading slash from pathname
+        const database = url.pathname.substring(1);
         
-        if (checkResult.rows.length === 0) {
-            console.log(`📦 Database "${database}" doesn't exist, creating it...`);
-            await client.query(`CREATE DATABASE ${database}`);
-            console.log(`✅ Database "${database}" created successfully`);
-        } else {
-            console.log(`✅ Database "${database}" already exists`);
-        }
+        console.log(`📦 Parsed connection: ${user}@${host}:${port}, database: ${database}`);
         
-        await client.end();
-        
-        // Now create the main connection pool with our database
-        console.log('📦 Creating main connection pool...');
-        this.pool = new Pool({
+        // Connect to default 'postgres' database to check/create our database
+        const client = new Client({
             host: host,
             port: parseInt(port),
             user: user,
             password: password,
-            database: database,
-            ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+            database: 'postgres',
+            ssl: {
+                rejectUnauthorized: false  // Neon requires SSL
+            }
         });
-        
-        // Test the connection
-        await this.pool.query('SELECT 1');
-        console.log('✅ Successfully connected to target database');
-        
-    } catch (error) {
-        console.error('❌ Error in ensureDatabaseExists:');
-        console.error('Error code:', error.code);
-        console.error('Error message:', error.message);
-        
-        if (error.code === 'ECONNREFUSED') {
-            console.error('\n📌 PostgreSQL is not running!');
-            console.error('Start PostgreSQL:');
-            console.error('1. Open "Services" (Win + R, type "services.msc")');
-            console.error('2. Find "postgresql" service');
-            console.error('3. Right-click and click "Start"');
-        } else if (error.code === '28P01') {
-            console.error('\n📌 Wrong password!');
-            console.error('The password in DATABASE_URL is incorrect');
-            console.error('Current password: ' + password.replace(/./g, '*'));
+
+        try {
+            console.log('📦 Connecting to default "postgres" database...');
+            await client.connect();
+            console.log('✅ Connected to PostgreSQL server');
+            
+            // Check if our target database exists
+            const checkResult = await client.query(
+                'SELECT 1 FROM pg_database WHERE datname = $1',
+                [database]
+            );
+            
+            if (checkResult.rows.length === 0) {
+                console.log(`📦 Database "${database}" doesn't exist, creating it...`);
+                await client.query(`CREATE DATABASE ${database}`);
+                console.log(`✅ Database "${database}" created successfully`);
+            } else {
+                console.log(`✅ Database "${database}" already exists`);
+            }
+            
+            await client.end();
+            
+            // Now create the main connection pool with our database
+            console.log('📦 Creating main connection pool...');
+            this.pool = new Pool({
+                host: host,
+                port: parseInt(port),
+                user: user,
+                password: password,
+                database: database,
+                ssl: {
+                    rejectUnauthorized: false
+                }
+            });
+            
+            // Test the connection
+            await this.pool.query('SELECT 1');
+            console.log('✅ Successfully connected to target database');
+            
+        } catch (error) {
+            console.error('❌ Error in ensureDatabaseExists:');
+            console.error('Error code:', error.code);
+            console.error('Error message:', error.message);
+            throw error;
         }
-        
-        throw error;
+    } catch (error) {
+        console.error('❌ Could not parse DATABASE_URL:', error.message);
+        console.error('Expected format: postgresql://user:pass@host:port/database');
+        console.error('Got:', connectionString);
+        throw new Error('Invalid DATABASE_URL format');
     }
 }
 
