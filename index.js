@@ -237,53 +237,71 @@ async function sendManagementPanel(channel) {
 }
 
 // ========== INTERACTION HANDLERS ==========
+// Command to show panel - ONLY visible to the staff member
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (message.content === '!panel') {
         // Check for officer role
-        const officerRoleName = process.env.OFFICER_ROLE || "Staff" || "Guild Master";
+        const officerRoleName = process.env.OFFICER_ROLE || "Officer";
         if (!message.member.roles.cache.some(role => role.name === officerRoleName)) {
-            return message.reply('❌ You need the **Staff** role to use this command!');
+            return message.reply({ 
+                content: '❌ You need the **Officer** role to use this command!',
+                flags: 64 // Ephemeral
+            });
         }
         
-        // Create the panel but send it as an ephemeral reply (only visible to them)
-        const branches = await db.getAllBranches();
+        try {
+            const branches = await db.getAllBranches();
 
-        const row1 = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('add_member_start')
-                    .setLabel('➕ Add Member')
-                    .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                    .setCustomId('remove_member')
-                    .setLabel('✖️ Remove Member')
-                    .setStyle(ButtonStyle.Danger),
-                new ButtonBuilder()
-                    .setCustomId('manage_branches')
-                    .setLabel('📁 Branches')
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId('manage_ranks')
-                    .setLabel('📊 Ranks')
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId('refresh_all')
-                    .setLabel('🔄 Refresh All')
-                    .setStyle(ButtonStyle.Secondary)
-            );
+            const row1 = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('add_member_start')
+                        .setLabel('➕ Add Member')
+                        .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                        .setCustomId('remove_member')
+                        .setLabel('✖️ Remove Member')
+                        .setStyle(ButtonStyle.Danger),
+                    new ButtonBuilder()
+                        .setCustomId('manage_branches')
+                        .setLabel('📁 Branches')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('manage_ranks')
+                        .setLabel('📊 Ranks')
+                        .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId('refresh_all')
+                        .setLabel('🔄 Refresh All')
+                        .setStyle(ButtonStyle.Secondary)
+                );
 
-        const panelEmbed = new EmbedBuilder()
-            .setColor('#990000')
-            .setTitle('🖥️ Roster Control Panel')
-            .setDescription('**Admin Only** - Click a button to manage the roster')
-            .addFields(
-                { name: '📊 Current Branches', value: branches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
-            );
+            const panelEmbed = new EmbedBuilder()
+                .setColor('#990000')
+                .setTitle('🖥️ Roster Control Panel')
+                .setDescription('**Staff Only** - Click a button to manage the roster')
+                .addFields(
+                    { name: '📊 Current Branches', value: branches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
+                );
 
-        // Send as ephemeral message (only they can see it)
-        await message.reply({ embeds: [panelEmbed], components: [row1], ephemeral: true });
-        message.delete(); // Delete their command message
+            // Send as an ephemeral message (ONLY they can see it)
+            await message.reply({ 
+                embeds: [panelEmbed], 
+                components: [row1], 
+                flags: 64 // 64 = Ephemeral
+            });
+            
+            // Delete their command message to keep chat clean
+            await message.delete();
+            
+        } catch (error) {
+            console.error('Error showing panel:', error);
+            await message.reply({ 
+                content: '❌ An error occurred showing the panel.',
+                flags: 64
+            });
+        }
     }
 });
 client.on('interactionCreate', async (interaction) => {
