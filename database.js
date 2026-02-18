@@ -1,157 +1,108 @@
-// database.js - PostgreSQL version with auto-creation
-const { Pool, Client } = require('pg');
+const { neon } = require('@neondatabase/serverless');
 
 class Database {
     constructor() {
-        this.pool = null;
-       // this.init();
-    }
-
-     async initialize() {
-        try {
-            // First, ensure the database exists
-            await this.ensureDatabaseExists();
-            
-            // Then initialize tables
-            await this.initTables();
-            
-            console.log('✅ PostgreSQL database ready');
-            return this;
-        } catch (error) {
-            console.error('❌ Database initialization failed:', error.message);
-            throw error;
+        this.sql = null;
+        this.connectionString = process.env.DATABASE_URL;
+        this.retryCount = 0;
+        this.maxRetries = 5;
+        
+        if (!this.connectionString) {
+            throw new Error('DATABASE_URL not found in .env file');
         }
     }
 
- async ensureDatabaseExists() {
-    const connectionString = process.env.DATABASE_URL;
-    
-    if (!connectionString) {
-        throw new Error('DATABASE_URL not found in .env file');
-    }
-
-    console.log('📦 DATABASE_URL:', connectionString.replace(/:[^:@]{1,100}@/, ':****@'));
-    
-    // Parse the connection string using URL class
-    try {
-        const url = new URL(connectionString);
-        
-        // Extract components
-        const user = url.username;
-        const password = url.password;
-        const host = url.hostname;
-        const port = url.port || '5432';
-        // Remove leading slash from pathname
-        const database = url.pathname.substring(1);
-        
-        console.log(`📦 Parsed connection: ${user}@${host}:${port}, database: ${database}`);
-        
-        // Connect to default 'postgres' database to check/create our database
-        const client = new Client({
-            host: host,
-            port: parseInt(port),
-            user: user,
-            password: password,
-            database: 'postgres',
-            ssl: {
-                rejectUnauthorized: false  // Neon requires SSL
-            }
-        });
-
-        try {
-            console.log('📦 Connecting to default "postgres" database...');
-            await client.connect();
-            console.log('✅ Connected to PostgreSQL server');
+    async getSql() {
+        if (!this.sql) {
+            console.log('📦 Creating new database connection...');
             
-            // Check if our target database exists
-            const checkResult = await client.query(
-                'SELECT 1 FROM pg_database WHERE datname = $1',
-                [database]
-            );
-            
-            if (checkResult.rows.length === 0) {
-                console.log(`📦 Database "${database}" doesn't exist, creating it...`);
-                await client.query(`CREATE DATABASE ${database}`);
-                console.log(`✅ Database "${database}" created successfully`);
-            } else {
-                console.log(`✅ Database "${database}" already exists`);
-            }
-            
-            await client.end();
-            
-            // Now create the main connection pool with our database
-            console.log('📦 Creating main connection pool...');
-            this.pool = new Pool({
-                host: host,
-                port: parseInt(port),
-                user: user,
-                password: password,
-                database: database,
-                ssl: {
-                    rejectUnauthorized: false
-                }
+            // Create a new connection with better options
+            this.sql = neon(this.connectionString, {
+                fetchOptions: {
+                    timeout: 30000, // 30 second timeout
+                    keepalive: true,
+                },
+                maxRetries: 3,
+                retryInterval: 2000,
+                // Don't keep connection open
+                pool: false,
             });
             
-            // Test the connection
-            await this.pool.query('SELECT 1');
-            console.log('✅ Successfully connected to target database');
+            // Test the connection with retry
+            let connected = false;
+            let attempts = 0;
             
+            while (!connected && attempts < 3) {
+                try {
+                    await this.sql`SELECT 1`;
+                    connected = true;
+                    console.log('✅ Database connection established');
+                    this.retryCount = 0; // Reset retry count on success
+                } catch (error) {
+                    attempts++;
+                    console.log(`⏳ Connection attempt ${attempts} failed:`, error.message);
+                    
+                    if (attempts >= 3) {
+                        this.sql = null;
+                        throw new Error(`Failed to connect after ${attempts} attempts`);
+                    }
+                    
+                    // Wait before retrying
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+            }
+        }
+        return this.sql;
+    }
+
+    async executeWithRetry(operation) {
+        let lastError;
+        
+        for (let i = 0; i < 3; i++) {
+            try {
+                const sql = await this.getSql();
+                return await operation(sql);
+            } catch (error) {
+                lastError = error;
+                console.log(`⚠️ Database operation failed (attempt ${i + 1}/3):`, error.message);
+                
+                // Reset connection on error
+                this.sql = null;
+                
+                // Wait before retry (exponential backoff)
+                await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+            }
+        }
+        
+        throw lastError;
+    }
+
+    async initialize() {
+        try {
+            await this.ensureDatabaseExists();
+            await this.initTables();
+            console.log('✅ Database ready for operations');
         } catch (error) {
-            console.error('❌ Error in ensureDatabaseExists:');
-            console.error('Error code:', error.code);
-            console.error('Error message:', error.message);
+            console.error('❌ Database initialization failed:', error);
             throw error;
         }
-    } catch (error) {
-        console.error('❌ Could not parse DATABASE_URL:', error.message);
-        console.error('Expected format: postgresql://user:pass@host:port/database');
-        console.error('Got:', connectionString);
-        throw new Error('Invalid DATABASE_URL format');
     }
-}
 
-    getDatabaseNameFromUrl(url) {
-    // Extract database name from URL
-    // Format: postgresql://user:pass@host:port/database
-    try {
-        // Simple approach - split by '/' and take the last part
-        const parts = url.split('/');
-        const lastPart = parts[parts.length - 1];
-        // Remove any query parameters
-        const dbName = lastPart.split('?')[0];
-        return dbName;
-    } catch (error) {
-        console.error('Error parsing database name:', error);
-        return 'rosterdb';
-    }
-}
-
-switchDatabase(url, newDbName) {
-    // Replace the database name in the URL
-    // Find the last '/' and replace everything after it
-    try {
-        const lastSlashIndex = url.lastIndexOf('/');
-        if (lastSlashIndex === -1) return url;
-        
-        // Get everything before the last slash
-        const baseUrl = url.substring(0, lastSlashIndex + 1);
-        // Check if there are query parameters
-        const hasQuery = url.includes('?');
-        if (hasQuery) {
-            const queryPart = url.substring(url.indexOf('?'));
-            return baseUrl + newDbName + queryPart;
+    async ensureDatabaseExists() {
+        try {
+            const sql = await this.getSql();
+            await sql`SELECT 1`;
+            console.log('✅ Connected to Neon database');
+        } catch (error) {
+            console.error('❌ Failed to connect to Neon:', error.message);
+            throw error;
         }
-        return baseUrl + newDbName;
-    } catch (error) {
-        console.error('Error switching database:', error);
-        return url;
     }
-}
 
     async initTables() {
-        try {
+        return this.executeWithRetry(async (sql) => {
             // Create branches table
-            await this.pool.query(`
+            await sql`
                 CREATE TABLE IF NOT EXISTS branches (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
@@ -160,10 +111,10 @@ switchDatabase(url, newDbName) {
                     message_id TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            `);
+            `;
 
             // Create ranks table
-            await this.pool.query(`
+            await sql`
                 CREATE TABLE IF NOT EXISTS ranks (
                     id SERIAL PRIMARY KEY,
                     branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
@@ -172,10 +123,10 @@ switchDatabase(url, newDbName) {
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(branch_id, name)
                 )
-            `);
+            `;
 
             // Create sub_branches table
-            await this.pool.query(`
+            await sql`
                 CREATE TABLE IF NOT EXISTS sub_branches (
                     id SERIAL PRIMARY KEY,
                     branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
@@ -184,10 +135,10 @@ switchDatabase(url, newDbName) {
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(branch_id, name)
                 )
-            `);
+            `;
 
             // Create characters table
-            await this.pool.query(`
+            await sql`
                 CREATE TABLE IF NOT EXISTS characters (
                     id SERIAL PRIMARY KEY,
                     branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
@@ -199,187 +150,174 @@ switchDatabase(url, newDbName) {
                     notes TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            `);
+            `;
 
-            console.log('✅ All tables created/verified');
-        } catch (error) {
-            console.error('Error creating tables:', error);
-            throw error;
-        }
+            console.log('✅ Tables created/verified');
+        });
     }
 
     // ========== BRANCH OPERATIONS ==========
     
     async getAllBranches() {
-        const result = await this.pool.query(
-            'SELECT * FROM branches ORDER BY display_order, name'
-        );
-        return result.rows;
+        return this.executeWithRetry(async (sql) => {
+            return await sql`SELECT * FROM branches ORDER BY display_order, name`;
+        });
     }
 
     async getBranch(id) {
-        const result = await this.pool.query(
-            'SELECT * FROM branches WHERE id = $1',
-            [id]
-        );
-        return result.rows[0];
-    }
-
-    async getBranchByName(name) {
-        const result = await this.pool.query(
-            'SELECT * FROM branches WHERE name = $1',
-            [name]
-        );
-        return result.rows[0];
+        return this.executeWithRetry(async (sql) => {
+            const result = await sql`SELECT * FROM branches WHERE id = ${id}`;
+            return result[0];
+        });
     }
 
     async addBranch(name, emoji = '📋', displayOrder = 0) {
-        const result = await this.pool.query(
-            'INSERT INTO branches (name, emoji, display_order) VALUES ($1, $2, $3) RETURNING id',
-            [name, emoji, displayOrder]
-        );
-        return result.rows[0].id;
+        return this.executeWithRetry(async (sql) => {
+            const result = await sql`
+                INSERT INTO branches (name, emoji, display_order) 
+                VALUES (${name}, ${emoji}, ${displayOrder}) 
+                RETURNING id
+            `;
+            return result[0].id;
+        });
     }
-
-    async updateBranch(id, { name, emoji, displayOrder }) {
-        await this.pool.query(
-            'UPDATE branches SET name = $1, emoji = $2, display_order = $3 WHERE id = $4',
-            [name, emoji, displayOrder, id]
-        );
-    }
-
-    async deleteBranch(id) {
-        await this.pool.query('DELETE FROM branches WHERE id = $1', [id]);
-    }
-
-    async updateBranchMessageId(branchId, messageId) {
-        await this.pool.query(
-            'UPDATE branches SET message_id = $1 WHERE id = $2',
-            [messageId, branchId]
-        );
-    }
-
-    // ========== RANK OPERATIONS ==========
 
     async getRanksByBranch(branchId) {
-        const result = await this.pool.query(
-            'SELECT * FROM ranks WHERE branch_id = $1 ORDER BY display_order, name',
-            [branchId]
-        );
-        return result.rows;
-    }
-
-    async getRank(id) {
-        const result = await this.pool.query(
-            'SELECT * FROM ranks WHERE id = $1',
-            [id]
-        );
-        return result.rows[0];
+        return this.executeWithRetry(async (sql) => {
+            return await sql`
+                SELECT * FROM ranks 
+                WHERE branch_id = ${branchId} 
+                ORDER BY display_order, name
+            `;
+        });
     }
 
     async addRank(branchId, name, displayOrder = 0) {
-        const result = await this.pool.query(
-            'INSERT INTO ranks (branch_id, name, display_order) VALUES ($1, $2, $3) RETURNING id',
-            [branchId, name, displayOrder]
-        );
-        return result.rows[0].id;
+        return this.executeWithRetry(async (sql) => {
+            const result = await sql`
+                INSERT INTO ranks (branch_id, name, display_order) 
+                VALUES (${branchId}, ${name}, ${displayOrder}) 
+                RETURNING id
+            `;
+            return result[0].id;
+        });
     }
-
-    async updateRank(id, { name, displayOrder }) {
-        await this.pool.query(
-            'UPDATE ranks SET name = $1, display_order = $2 WHERE id = $3',
-            [name, displayOrder, id]
-        );
-    }
-
-    async deleteRank(id) {
-        await this.pool.query('DELETE FROM ranks WHERE id = $1', [id]);
-    }
-
-    // ========== SUB-BRANCH OPERATIONS ==========
 
     async getSubBranchesByBranch(branchId) {
-        const result = await this.pool.query(
-            'SELECT * FROM sub_branches WHERE branch_id = $1 ORDER BY display_order, name',
-            [branchId]
-        );
-        return result.rows;
+        return this.executeWithRetry(async (sql) => {
+            return await sql`
+                SELECT * FROM sub_branches 
+                WHERE branch_id = ${branchId} 
+                ORDER BY display_order, name
+            `;
+        });
     }
 
     async addSubBranch(branchId, name, displayOrder = 0) {
-        const result = await this.pool.query(
-            'INSERT INTO sub_branches (branch_id, name, display_order) VALUES ($1, $2, $3) RETURNING id',
-            [branchId, name, displayOrder]
-        );
-        return result.rows[0].id;
+        return this.executeWithRetry(async (sql) => {
+            const result = await sql`
+                INSERT INTO sub_branches (branch_id, name, display_order) 
+                VALUES (${branchId}, ${name}, ${displayOrder}) 
+                RETURNING id
+            `;
+            return result[0].id;
+        });
     }
-
-    async deleteSubBranch(id) {
-        await this.pool.query('DELETE FROM sub_branches WHERE id = $1', [id]);
-    }
-
-    // ========== CHARACTER OPERATIONS ==========
 
     async getCharactersByBranch(branchId) {
-        const result = await this.pool.query(`
-            SELECT 
-                c.*,
-                r.name as rank_name,
-                sb.name as sub_branch_name
-            FROM characters c
-            JOIN ranks r ON c.rank_id = r.id
-            LEFT JOIN sub_branches sb ON c.sub_branch_id = sb.id
-            WHERE c.branch_id = $1
-            ORDER BY 
-                CASE WHEN sb.name IS NULL THEN 0 ELSE 1 END,
-                sb.name,
-                r.display_order,
-                r.name,
-                c.name
-        `, [branchId]);
-        return result.rows;
+        return this.executeWithRetry(async (sql) => {
+            return await sql`
+                SELECT 
+                    c.*,
+                    r.name as rank_name,
+                    sb.name as sub_branch_name
+                FROM characters c
+                JOIN ranks r ON c.rank_id = r.id
+                LEFT JOIN sub_branches sb ON c.sub_branch_id = sb.id
+                WHERE c.branch_id = ${branchId}
+                ORDER BY 
+                    CASE WHEN sb.name IS NULL THEN 0 ELSE 1 END,
+                    sb.name,
+                    r.display_order,
+                    r.name,
+                    c.name
+            `;
+        });
     }
 
     async getAllCharacters() {
-        const result = await this.pool.query(`
-            SELECT 
-                c.*,
-                b.name as branch_name,
-                b.emoji as branch_emoji,
-                r.name as rank_name,
-                sb.name as sub_branch_name
-            FROM characters c
-            JOIN branches b ON c.branch_id = b.id
-            JOIN ranks r ON c.rank_id = r.id
-            LEFT JOIN sub_branches sb ON c.sub_branch_id = sb.id
-            ORDER BY b.display_order, b.name, r.display_order, r.name, c.name
-        `);
-        return result.rows;
+        return this.executeWithRetry(async (sql) => {
+            return await sql`
+                SELECT 
+                    c.*,
+                    b.name as branch_name,
+                    b.emoji as branch_emoji,
+                    r.name as rank_name,
+                    sb.name as sub_branch_name
+                FROM characters c
+                JOIN branches b ON c.branch_id = b.id
+                JOIN ranks r ON c.rank_id = r.id
+                LEFT JOIN sub_branches sb ON c.sub_branch_id = sb.id
+                ORDER BY b.display_order, b.name, r.display_order, r.name, c.name
+            `;
+        });
     }
 
     async addCharacter(branchId, rankId, name, alt = '', title = '', subBranchId = null) {
-        const result = await this.pool.query(
-            `INSERT INTO characters (branch_id, rank_id, sub_branch_id, name, alt, title) 
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-            [branchId, rankId, subBranchId, name, alt, title]
-        );
-        return result.rows[0].id;
+        return this.executeWithRetry(async (sql) => {
+            const result = await sql`
+                INSERT INTO characters (branch_id, rank_id, sub_branch_id, name, alt, title) 
+                VALUES (${branchId}, ${rankId}, ${subBranchId}, ${name}, ${alt}, ${title}) 
+                RETURNING id
+            `;
+            return result[0].id;
+        });
     }
 
     async removeCharacter(name) {
-        const result = await this.pool.query(
-            'DELETE FROM characters WHERE name = $1',
-            [name]
-        );
-        return result.rowCount;
+        return this.executeWithRetry(async (sql) => {
+            const result = await sql`DELETE FROM characters WHERE name = ${name}`;
+            return result.count || 0;
+        });
     }
 
-    async removeCharacterById(id) {
-        const result = await this.pool.query(
-            'DELETE FROM characters WHERE id = $1',
-            [id]
-        );
-        return result.rowCount;
+    async updateBranchMessageId(branchId, messageId) {
+        return this.executeWithRetry(async (sql) => {
+            await sql`
+                UPDATE branches 
+                SET message_id = ${messageId} 
+                WHERE id = ${branchId}
+            `;
+        });
+    }
+
+    async getRank(id) {
+        return this.executeWithRetry(async (sql) => {
+            const result = await sql`SELECT * FROM ranks WHERE id = ${id}`;
+            return result[0];
+        });
+    }
+
+    async updateRank(id, { name, displayOrder }) {
+        return this.executeWithRetry(async (sql) => {
+            await sql`
+                UPDATE ranks 
+                SET name = ${name}, display_order = ${displayOrder} 
+                WHERE id = ${id}
+            `;
+        });
+    }
+
+    async deleteRank(id) {
+        return this.executeWithRetry(async (sql) => {
+            await sql`DELETE FROM ranks WHERE id = ${id}`;
+        });
+    }
+
+    async deleteSubBranch(id) {
+        return this.executeWithRetry(async (sql) => {
+            await sql`DELETE FROM sub_branches WHERE id = ${id}`;
+        });
     }
 
     async getBranchForDisplay(branchId) {
@@ -390,7 +328,6 @@ switchDatabase(url, newDbName) {
         
         // Special handling for specific branches
         if (branch.name === 'IMPERIAL NAVY') {
-            // Navy: Separate Talon Squadron from regular members
             const regularMembers = [];
             const talonMembers = [];
             
@@ -402,31 +339,21 @@ switchDatabase(url, newDbName) {
                 }
             });
             
-            // Group regular members by rank
             const byRank = {};
             regularMembers.forEach(char => {
-                if (!byRank[char.rank_name]) {
-                    byRank[char.rank_name] = [];
-                }
-                
+                if (!byRank[char.rank_name]) byRank[char.rank_name] = [];
                 let displayText = `• ${char.name}`;
                 if (char.alt) displayText += ` (${char.alt})`;
                 if (char.title) displayText += ` - ${char.title}`;
-                
                 byRank[char.rank_name].push(displayText);
             });
             
-            // Group Talon members by rank
             const talonByRank = {};
             talonMembers.forEach(char => {
-                if (!talonByRank[char.rank_name]) {
-                    talonByRank[char.rank_name] = [];
-                }
-                
+                if (!talonByRank[char.rank_name]) talonByRank[char.rank_name] = [];
                 let displayText = `• ${char.name}`;
                 if (char.alt) displayText += ` (${char.alt})`;
                 if (char.title) displayText += ` - ${char.title}`;
-                
                 talonByRank[char.rank_name].push(displayText);
             });
 
@@ -439,30 +366,23 @@ switchDatabase(url, newDbName) {
                     byRank: talonByRank
                 }
             };
-        }
-        else {
-            // For all other branches: Group by sub-branch first, then by rank
+        } else {
             const bySubBranch = {};
             
             characters.forEach(char => {
                 const subKey = char.sub_branch_name || 'MAIN';
-                
                 if (!bySubBranch[subKey]) {
                     bySubBranch[subKey] = {
                         name: char.sub_branch_name,
                         byRank: {}
                     };
                 }
-                
-                // Group by rank within this sub-branch
                 if (!bySubBranch[subKey].byRank[char.rank_name]) {
                     bySubBranch[subKey].byRank[char.rank_name] = [];
                 }
-                
                 let displayText = `• ${char.name}`;
                 if (char.alt) displayText += ` (${char.alt})`;
                 if (char.title) displayText += ` - ${char.title}`;
-                
                 bySubBranch[subKey].byRank[char.rank_name].push(displayText);
             });
 
@@ -475,17 +395,18 @@ switchDatabase(url, newDbName) {
     }
 
     async clearAllData() {
-        await this.pool.query('DELETE FROM characters');
-        await this.pool.query('DELETE FROM ranks');
-        await this.pool.query('DELETE FROM sub_branches');
-        await this.pool.query('DELETE FROM branches');
-        console.log('✅ All data cleared');
+        return this.executeWithRetry(async (sql) => {
+            await sql`DELETE FROM characters`;
+            await sql`DELETE FROM ranks`;
+            await sql`DELETE FROM sub_branches`;
+            await sql`DELETE FROM branches`;
+            console.log('✅ All data cleared');
+        });
     }
 
     async close() {
-        if (this.pool) {
-            await this.pool.end();
-        }
+        this.sql = null;
+        console.log('✅ Database connection closed');
     }
 }
 

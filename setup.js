@@ -10,7 +10,22 @@ async function init(db) {
     // await db.db.run('DELETE FROM characters');
     // await db.db.run('DELETE FROM ranks');
     // await db.db.run('DELETE FROM branches');
+        if (!db) {
+        console.error('❌ Database instance is undefined!');
+        return;
+    }
+    try {
+        // IMPORTANT: Check if there's already data
+        const branches = await db.getAllBranches();
+        
+        if (branches.length > 0) {
+            console.log('✅ Roster data already exists, skipping initialization');
+            console.log(`📊 Found ${branches.length} existing branches:`);
+            branches.forEach(b => console.log(`   - ${b.emoji} ${b.name}`));
+            return; // Exit early - don't add anything
+        }
 
+        console.log('📦 No existing data found, loading initial roster...');
     // ===== ADD BRANCHES =====
     console.log('Adding branches...');
     const sithId = await db.addBranch('SITH ORDER', '🔴', 0);
@@ -212,6 +227,10 @@ console.log('✅ 6');
  
     console.log('✅ Setup complete! All branches, ranks, and characters added.');
     console.log('🎉 You can now start the bot and it will show the full roster!');
+      } catch (error) {
+        console.error('❌ Error in setup:', error);
+        throw error;
+    }
 }
 
 module.exports = init;

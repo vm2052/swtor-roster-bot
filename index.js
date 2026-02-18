@@ -237,7 +237,55 @@ async function sendManagementPanel(channel) {
 }
 
 // ========== INTERACTION HANDLERS ==========
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+    if (message.content === '!panel') {
+        // Check for officer role
+        const officerRoleName = process.env.OFFICER_ROLE || "Staff" || "Guild Master";
+        if (!message.member.roles.cache.some(role => role.name === officerRoleName)) {
+            return message.reply('❌ You need the **Staff** role to use this command!');
+        }
+        
+        // Create the panel but send it as an ephemeral reply (only visible to them)
+        const branches = await db.getAllBranches();
 
+        const row1 = new ActionRowBuilder()
+            .addComponents(
+                new ButtonBuilder()
+                    .setCustomId('add_member_start')
+                    .setLabel('➕ Add Member')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId('remove_member')
+                    .setLabel('✖️ Remove Member')
+                    .setStyle(ButtonStyle.Danger),
+                new ButtonBuilder()
+                    .setCustomId('manage_branches')
+                    .setLabel('📁 Branches')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('manage_ranks')
+                    .setLabel('📊 Ranks')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('refresh_all')
+                    .setLabel('🔄 Refresh All')
+                    .setStyle(ButtonStyle.Secondary)
+            );
+
+        const panelEmbed = new EmbedBuilder()
+            .setColor('#990000')
+            .setTitle('🖥️ Roster Control Panel')
+            .setDescription('**Admin Only** - Click a button to manage the roster')
+            .addFields(
+                { name: '📊 Current Branches', value: branches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
+            );
+
+        // Send as ephemeral message (only they can see it)
+        await message.reply({ embeds: [panelEmbed], components: [row1], ephemeral: true });
+        message.delete(); // Delete their command message
+    }
+});
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
@@ -247,7 +295,7 @@ client.on('interactionCreate', async (interaction) => {
             
             // REFRESH ALL
             if (interaction.customId === 'refresh_all') {
-                await interaction.reply({ content: '🔄 Refreshing all branch messages...', ephemeral: true });
+                await interaction.reply({ content: '🔄 Refreshing all branch messages...', ephemeral: 64 });
                 await updateAllBranchMessages();
                 await interaction.editReply({ content: '✅ All branches refreshed!' });
             }
@@ -306,7 +354,7 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.reply({
                     content: '**Step 1/3:** Select a branch or create a new one:',
                     components: [row],
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
 
@@ -355,7 +403,7 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.reply({
                     content: 'Manage Branches:',
                     components: [row],
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
 
@@ -366,7 +414,7 @@ client.on('interactionCreate', async (interaction) => {
                 if (branches.length === 0) {
                     await interaction.reply({ 
                         content: '❌ No branches yet. Create a branch first!', 
-                        ephemeral: true 
+                        ephemeral: 64 
                     });
                     return;
                 }
@@ -387,7 +435,7 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.reply({
                     content: 'Select a branch to manage its ranks:',
                     components: [row],
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
         }
@@ -447,7 +495,7 @@ client.on('interactionCreate', async (interaction) => {
 
                         await interaction.reply({
                             content: 'This branch has no ranks. Create the first one:',
-                            ephemeral: true
+                            ephemeral: 64
                         });
                         await interaction.followUp({ embeds: [], components: [] });
                         await interaction.showModal(modal);
@@ -480,67 +528,91 @@ client.on('interactionCreate', async (interaction) => {
 
             // ADD MEMBER - RANK SELECTION
             else if (interaction.customId === 'add_member_select_rank') {
-                const selected = interaction.values[0];
-                const userData = tempStore.get(interaction.user.id) || {};
+        const selected = interaction.values[0];
+        const userData = tempStore.get(interaction.user.id) || {};
+        
+        if (selected === 'new_rank') {
+            userData.creatingRank = true;
+            tempStore.set(interaction.user.id, userData);
+            
+            const modal = new ModalBuilder()
+                .setCustomId('create_rank_for_member')
+                .setTitle('Create New Rank');
+
+            const nameInput = new TextInputBuilder()
+                .setCustomId('rank_name')
+                .setLabel("Rank Name")
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setPlaceholder('e.g., JEDI MASTER');
+
+            modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
+
+            await interaction.showModal(modal);
+        } else {
+            userData.rankId = parseInt(selected);
+            tempStore.set(interaction.user.id, userData);
+            
+            // Get sub-branches for this branch
+            const subBranches = await db.getSubBranchesByBranch(userData.branchId);
+            
+            if (subBranches.length > 0) {
+                // Create sub-branch selection menu
+                const subBranchSelect = new StringSelectMenuBuilder()
+                    .setCustomId('add_member_select_sub_branch')
+                    .setPlaceholder('Select a sub-branch (optional)')
+                    .addOptions([
+                        { label: 'None (Main Branch)', value: 'none', emoji: '📌' },
+                        ...subBranches.map(sb => ({
+                            label: sb.name,
+                            value: sb.id.toString(),
+                            emoji: '📂'
+                        }))
+                    ]);
+
+                const row = new ActionRowBuilder().addComponents(subBranchSelect);
                 
-                if (selected === 'new_rank') {
-                    userData.creatingRank = true;
-                    tempStore.set(interaction.user.id, userData);
-                    
-                    const modal = new ModalBuilder()
-                        .setCustomId('create_rank_for_member')
-                        .setTitle('Create New Rank');
+                await interaction.update({
+                    content: '**Step 3/4:** Select a sub-branch (optional):',
+                    components: [row]
+                });
+            } else {
+                // No sub-branches, go straight to member details
+                const modal = new ModalBuilder()
+                    .setCustomId('add_member_details')
+                    .setTitle('Add Member Details');
 
-                    const nameInput = new TextInputBuilder()
-                        .setCustomId('rank_name')
-                        .setLabel("Rank Name")
-                        .setStyle(TextInputStyle.Short)
-                        .setRequired(true)
-                        .setPlaceholder('e.g., JEDI MASTER');
+                const nameInput = new TextInputBuilder()
+                    .setCustomId('name')
+                    .setLabel("Character Name")
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true)
+                    .setPlaceholder('e.g., Darth Malgus');
 
-                    modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
+                const altInput = new TextInputBuilder()
+                    .setCustomId('alt')
+                    .setLabel("Legacy Name")
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(false)
+                    .setPlaceholder('e.g., Duskfell, Nolan');
 
-                    await interaction.showModal(modal);
-                } else {
-                    userData.rankId = parseInt(selected);
-                    tempStore.set(interaction.user.id, userData);
-                    
-                    // Go straight to member details
-                    const modal = new ModalBuilder()
-                        .setCustomId('add_member_details')
-                        .setTitle('Add Member Details');
+                const titleInput = new TextInputBuilder()
+                    .setCustomId('title')
+                    .setLabel("Title/Role (optional)")
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(false)
+                    .setPlaceholder('e.g., Marshall, Talon-1, App. to Darth Malgus');
 
-                    const nameInput = new TextInputBuilder()
-                        .setCustomId('name')
-                        .setLabel("Character Name")
-                        .setStyle(TextInputStyle.Short)
-                        .setRequired(true)
-                        .setPlaceholder('e.g., Darth Malgus');
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(nameInput),
+                    new ActionRowBuilder().addComponents(altInput),
+                    new ActionRowBuilder().addComponents(titleInput)
+                );
 
-                    const altInput = new TextInputBuilder()
-                        .setCustomId('alt')
-                        .setLabel("Legacy Name")
-                        .setStyle(TextInputStyle.Short)
-                        .setRequired(false)
-                         .setPlaceholder('e.g., Duskfell, Nolan');
-
-                    const titleInput = new TextInputBuilder()
-                        .setCustomId('title')
-                        .setLabel("Title/Role (optional)")
-                        .setStyle(TextInputStyle.Short)
-                        .setRequired(false)
-                        .setPlaceholder('e.g., Marshall, Talon-1, App. to Darth Malgus');
-
-
-                    modal.addComponents(
-                        new ActionRowBuilder().addComponents(nameInput),
-                        new ActionRowBuilder().addComponents(altInput),
-                        new ActionRowBuilder().addComponents(titleInput)
-                    );
-
-                    await interaction.showModal(modal);
-                }
+                await interaction.showModal(modal);
             }
+        }
+}
 
             // MANAGE BRANCHES
             else if (interaction.customId === 'manage_branches_select') {
@@ -741,7 +813,7 @@ client.on('interactionCreate', async (interaction) => {
                 
                 await interaction.reply({
                     content: `✅ Created branch **${name}**!\n\nNow create the first rank:`,
-                    ephemeral: true
+                    ephemeral: 64
                 });
                 await interaction.showModal(modal);
             }
@@ -793,7 +865,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 await interaction.reply({
                     content: `✅ Created rank **${rankName}**!\n\nNow add member details:`,
-                    ephemeral: true
+                    ephemeral: 64
                 });
                 await interaction.showModal(modal);
             }
@@ -821,7 +893,7 @@ client.on('interactionCreate', async (interaction) => {
                 
                 await interaction.reply({
                     content: `✅ Successfully added **${name}** to the roster!`,
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
 
@@ -835,7 +907,7 @@ client.on('interactionCreate', async (interaction) => {
                 
                 await interaction.reply({
                     content: `✅ Created branch **${name}** ${emoji}`,
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
 
@@ -850,7 +922,7 @@ client.on('interactionCreate', async (interaction) => {
                 
                 await interaction.reply({
                     content: `✅ Updated branch to **${name}** ${emoji}`,
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
 
@@ -864,7 +936,7 @@ client.on('interactionCreate', async (interaction) => {
                 
                 await interaction.reply({
                     content: `✅ Created rank **${name}**`,
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
 
@@ -880,14 +952,14 @@ client.on('interactionCreate', async (interaction) => {
                 
                 await interaction.reply({
                     content: `✅ Updated rank to **${name}**`,
-                    ephemeral: true
+                    ephemeral: 64
                 });
             }
 
            // REMOVE MEMBER MODAL HANDLER
                 else if (interaction.customId === 'remove_member_modal') {
                     // Defer the reply immediately to prevent timeout
-                    await interaction.deferReply({ ephemeral: true });
+                    await interaction.deferReply({ ephemeral: 64 });
                     
                     const name = interaction.fields.getTextInputValue('member_name');
                     
@@ -971,7 +1043,7 @@ client.on('interactionCreate', async (interaction) => {
         console.error('Interaction error:', error);
         await interaction.reply({ 
             content: '❌ An error occurred. Please try again.', 
-            ephemeral: true 
+            ephemeral: 64 
         }).catch(() => {});
     }
 });
@@ -993,16 +1065,16 @@ client.once('ready', async () => {
     // await channel.bulkDelete(messages);
     
     await updateAllBranchMessages();
-    await sendManagementPanel(channel);
+    //await sendManagementPanel(channel);
 });
 
 // Command to show panel
-client.on('messageCreate', async (message) => {
+/*client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (message.content === '!panel' && message.member.permissions.has('ManageMessages')) {
         await sendManagementPanel(message.channel);
         message.delete();
     }
-});
+});*/
 
 client.login(process.env.DISCORD_TOKEN);
