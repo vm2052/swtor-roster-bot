@@ -806,35 +806,40 @@ client.on('interactionCreate', async (interaction) => {
         else if (interaction.isModalSubmit()) {
             
             // CREATE BRANCH DURING ADD MEMBER
-            if (interaction.customId === 'create_branch_for_member') {
-                const name = interaction.fields.getTextInputValue('branch_name').toUpperCase();
-                const emoji = interaction.fields.getTextInputValue('branch_emoji') || '📋';
-                
-                const branchId = await db.addBranch(name, emoji);
-                await updateBranchMessage(branchId);
-                
-                tempStore.set(interaction.user.id, { branchId, newBranch: true });
-                
-                // Now ask for rank
-                const modal = new ModalBuilder()
-                    .setCustomId('create_rank_for_member')
-                    .setTitle('Create First Rank');
+           if (interaction.customId === 'create_branch_for_member') {
+    try {
+        const modal = new ModalBuilder()
+            .setCustomId('create_branch_for_member')
+            .setTitle('Create New Branch');
 
-                const rankInput = new TextInputBuilder()
-                    .setCustomId('rank_name')
-                    .setLabel("Rank Name")
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
-                    .setPlaceholder('e.g., DARK COUNCIL');
+        const nameInput = new TextInputBuilder()
+            .setCustomId('branch_name')
+            .setLabel("Branch Name")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setPlaceholder('e.g., SITH ORDER');
 
-                modal.addComponents(new ActionRowBuilder().addComponents(rankInput));
-                
-                await interaction.reply({
-                    content: `✅ Created branch **${name}**!\n\nNow create the first rank:`,
-                    ephemeral: 64
-                });
-                await interaction.showModal(modal);
-            }
+        const emojiInput = new TextInputBuilder()
+            .setCustomId('branch_emoji')
+            .setLabel("Emoji")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false)
+            .setPlaceholder('🔴');
+
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(nameInput),
+            new ActionRowBuilder().addComponents(emojiInput)
+        );
+
+        await interaction.showModal(modal);
+    } catch (error) {
+        console.error('Error showing modal:', error);
+        await interaction.reply({ 
+            content: '❌ Failed to open modal. Please try again.', 
+            flags: 64 
+        });
+    }
+}
 
             // CREATE RANK DURING ADD MEMBER
             else if (interaction.customId === 'create_rank_for_member') {
