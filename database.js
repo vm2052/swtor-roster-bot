@@ -275,12 +275,85 @@ class Database {
     }
 
     async removeCharacter(name) {
-        return this.executeWithRetry(async (sql) => {
+    return this.executeWithRetry(async (sql) => {
+        try {
+            // First, check if the character exists and get its ID
+            const check = await sql`SELECT id, name FROM characters WHERE name = ${name}`;
+            
+            if (check.length === 0) {
+                console.log(`Character "${name}" not found in database`);
+                return 0;
+            }
+            
+            console.log(`Found character: ${check[0].name} with ID: ${check[0].id}, attempting to delete...`);
+            
+            // Delete the character
             const result = await sql`DELETE FROM characters WHERE name = ${name}`;
-            return result.count || 0;
+            
+            console.log(`Delete result type:`, typeof result);
+            console.log(`Delete result value:`, result);
+            console.log(`Delete result length:`, result?.length);
+            console.log(`Delete result count:`, result?.count);
+            
+            // Handle different return types from Neon
+            if (result === null || result === undefined) {
+                console.log('Result is null/undefined, checking if character was actually deleted...');
+                // Verify deletion by trying to find it again
+                const verify = await sql`SELECT id FROM characters WHERE name = ${name}`;
+                return verify.length === 0 ? 1 : 0;
+            }
+            
+            // If result is an array (empty or otherwise)
+            if (Array.isArray(result)) {
+                console.log('Result is an array');
+                // For DELETE operations, an empty array usually means success
+                // But let's verify by checking if the character still exists
+                const verify = await sql`SELECT id FROM characters WHERE name = ${name}`;
+                const deleted = verify.length === 0;
+                console.log(`Verification - character still exists: ${!deleted}`);
+                return deleted ? 1 : 0;
+            }
+            
+            // If result is an object with count or rowCount
+            if (result && typeof result === 'object') {
+                if (result.count !== undefined) {
+                    console.log(`Result has count: ${result.count}`);
+                    return result.count;
+                }
+                if (result.rowCount !== undefined) {
+                    console.log(`Result has rowCount: ${result.rowCount}`);
+                    return result.rowCount;
+                }
+            }
+            
+            // If result is a number
+            if (typeof result === 'number') {
+                console.log(`Result is a number: ${result}`);
+                return result;
+            }
+            
+            // Default: check if character still exists
+            console.log('Unknown result format, verifying deletion...');
+            const verify = await sql`SELECT id FROM characters WHERE name = ${name}`;
+            return verify.length === 0 ? 1 : 0;
+            
+        } catch (error) {
+            console.error('Error in removeCharacter:', error);
+            throw error;
+        }
+    });
+}
+    async updateBranch(id, { name, emoji, displayOrder }) {
+        return this.executeWithRetry(async (sql) => {
+            await sql`
+                UPDATE branches 
+                SET name = ${name}, 
+                    emoji = ${emoji}, 
+                    display_order = ${displayOrder !== undefined ? displayOrder : 0}
+                WHERE id = ${id}
+            `;
         });
     }
-
     async updateBranchMessageId(branchId, messageId) {
         return this.executeWithRetry(async (sql) => {
             await sql`
@@ -313,7 +386,17 @@ class Database {
             await sql`DELETE FROM ranks WHERE id = ${id}`;
         });
     }
-
+    async deleteBranch(id) {
+    return this.executeWithRetry(async (sql) => {
+ 
+        await sql`DELETE FROM characters WHERE branch_id = ${id}`;
+        
+ 
+        await sql`DELETE FROM branches WHERE id = ${id}`;
+        
+        console.log(`✅ Deleted branch ID: ${id}`);
+    });
+}
     async deleteSubBranch(id) {
         return this.executeWithRetry(async (sql) => {
             await sql`DELETE FROM sub_branches WHERE id = ${id}`;
@@ -344,7 +427,7 @@ class Database {
                 if (!byRank[char.rank_name]) byRank[char.rank_name] = [];
                 let displayText = `• ${char.name}`;
                 if (char.alt) displayText += ` (${char.alt})`;
-                if (char.title) displayText += ` - ${char.title}`;
+                if (char.title) displayText += ` - *${char.title}*`;
                 byRank[char.rank_name].push(displayText);
             });
             
@@ -353,7 +436,7 @@ class Database {
                 if (!talonByRank[char.rank_name]) talonByRank[char.rank_name] = [];
                 let displayText = `• ${char.name}`;
                 if (char.alt) displayText += ` (${char.alt})`;
-                if (char.title) displayText += ` - ${char.title}`;
+                if (char.title) displayText += ` - *${char.title}*`;
                 talonByRank[char.rank_name].push(displayText);
             });
 
@@ -382,7 +465,7 @@ class Database {
                 }
                 let displayText = `• ${char.name}`;
                 if (char.alt) displayText += ` (${char.alt})`;
-                if (char.title) displayText += ` - ${char.title}`;
+                if (char.title) displayText += ` - *${char.title}*`;
                 bySubBranch[subKey].byRank[char.rank_name].push(displayText);
             });
 

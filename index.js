@@ -3,6 +3,8 @@ require('dotenv').config();
 
 const Database = require('./database.js');
 const init = require('./setup.js');
+const { isValidEmoji, sanitizeEmoji, createOption, validateBranchEmojis } = require('./emoji-utils.js');
+
 const db = new Database();
 
 const client = new Client({
@@ -25,9 +27,12 @@ async function updateBranchMessage(branchId) {
 
         const channel = await client.channels.fetch(process.env.ROSTER_CHANNEL_ID);
         
+        // Ensure emoji is valid for display
+        const displayEmoji = sanitizeEmoji(branchData.emoji, '📋');
+        
         const embed = new EmbedBuilder()
             .setColor('#990000')
-            .setTitle(`${branchData.emoji} ${branchData.name}`)
+            .setTitle(`${displayEmoji} ${branchData.name}`)
             .setTimestamp();
 
         let totalMembers = 0;
@@ -202,6 +207,9 @@ async function updateAllBranchMessages() {
 
 async function sendManagementPanel(channel) {
     const branches = await db.getAllBranches();
+    
+    // Validate branch emojis
+    const validatedBranches = validateBranchEmojis(branches);
 
     const row1 = new ActionRowBuilder()
         .addComponents(
@@ -232,7 +240,7 @@ async function sendManagementPanel(channel) {
         .setTitle('🖥️ Roster Control Panel')
         .setDescription('**One message per branch**\nClick a button to manage the roster')
         .addFields(
-            { name: '📊 Current Branches', value: branches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
+            { name: '📊 Current Branches', value: validatedBranches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
         );
 
     await channel.send({ embeds: [panelEmbed], components: [row1] });
@@ -257,6 +265,9 @@ client.on('messageCreate', async (message) => {
         
         try {
             const branches = await db.getAllBranches();
+            
+            // Validate branch emojis
+            const validatedBranches = validateBranchEmojis(branches);
 
             const row1 = new ActionRowBuilder()
                 .addComponents(
@@ -287,7 +298,7 @@ client.on('messageCreate', async (message) => {
                 .setTitle('🖥️ Roster Control Panel')
                 .setDescription('**Staff Only** - Click a button to manage the roster')
                 .addFields(
-                    { name: '📊 Current Branches', value: branches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
+                    { name: '📊 Current Branches', value: validatedBranches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
                 );
 
             // Send the panel as an ephemeral reply
@@ -321,15 +332,21 @@ client.on('messageCreate', async (message) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+     console.log('🔥 Interaction received:', {
+        type: interaction.type,
+        customId: interaction.customId,
+        user: interaction.user.tag
+    });
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) return;
 
     try {
         // ========== BUTTON HANDLERS ==========
         if (interaction.isButton()) {
-            
+            console.log('🔘 Button clicked with customId:', interaction.customId);
             // REFRESH ALL
             if (interaction.customId === 'refresh_all') {
-                await interaction.reply({ content: '🔄 Refreshing all branch messages...', flags: 64 });
+               // await interaction.reply({ content: '🔄 Refreshing all branch messages...', flags: 64 });
+                await replyAndAutoDelete(interaction, '🔄 Refreshing all branch messages...', { deleteDelay: 5000 });
                 await updateAllBranchMessages();
                 await interaction.editReply({ content: '✅ All branches refreshed!' });
             }
@@ -353,10 +370,10 @@ client.on('interactionCreate', async (interaction) => {
 
                     const emojiInput = new TextInputBuilder()
                         .setCustomId('branch_emoji')
-                        .setLabel("Emoji")
+                        .setLabel("Emoji (optional)")
                         .setStyle(TextInputStyle.Short)
                         .setRequired(false)
-                        .setPlaceholder('🔴');
+                        .setPlaceholder('e.g., 🔴 (must be valid Discord emoji)');
 
                     modal.addComponents(
                         new ActionRowBuilder().addComponents(nameInput),
@@ -367,29 +384,27 @@ client.on('interactionCreate', async (interaction) => {
                     return;
                 }
 
+                // Validate branch emojis
+                const validatedBranches = validateBranchEmojis(branches);
+                
+                const options = [
+                    ...validatedBranches.map(b => createOption(b.name, b.id.toString(), b.emoji)),
+                    createOption('Create New Branch', 'new_branch', '➕')
+                ];
+
                 const selectMenu = new StringSelectMenuBuilder()
                     .setCustomId('add_member_select_branch')
                     .setPlaceholder('Select a branch')
-                    .addOptions(
-                        branches.map(b => ({
-                            label: b.name,
-                            value: b.id.toString(),
-                            emoji: b.emoji
-                        }))
-                    )
-                    .addOptions({
-                        label: '➕ Create New Branch',
-                        value: 'new_branch',
-                        emoji: '🆕'
-                    });
+                    .addOptions(options);
 
                 const row = new ActionRowBuilder().addComponents(selectMenu);
                 
-                await interaction.reply({
+               /* await interaction.reply({
                     content: '**Step 1/3:** Select a branch or create a new one:',
                     components: [row],
                     flags: 64
-                });
+                });*/
+                await replyAndAutoDelete(interaction, '**Step 1/3:** Select a branch or create a new one:', { components: [row] , deleteDelay: 50000 });
             }
 
             // REMOVE MEMBER
@@ -415,30 +430,28 @@ client.on('interactionCreate', async (interaction) => {
             else if (interaction.customId === 'manage_branches') {
                 const branches = await db.getAllBranches();
                 
+                // Validate branch emojis
+                const validatedBranches = validateBranchEmojis(branches);
+                
+                const options = [
+                    createOption('Create New Branch', 'create_branch', '➕'),
+                    ...validatedBranches.map(b => createOption(`Edit ${b.name}`, `edit_branch_${b.id}`, '✏️')),
+                    ...validatedBranches.map(b => createOption(`Delete ${b.name}`, `delete_branch_${b.id}`, '🗑️'))
+                ];
+
                 const selectMenu = new StringSelectMenuBuilder()
                     .setCustomId('manage_branches_select')
                     .setPlaceholder('Select action')
-                    .addOptions([
-                        { label: '➕ Create New Branch', value: 'create_branch', emoji: '🆕' },
-                        ...branches.map(b => ({
-                            label: `✏️ Edit ${b.name}`,
-                            value: `edit_branch_${b.id}`,
-                            emoji: b.emoji
-                        })),
-                        ...branches.map(b => ({
-                            label: `🗑️ Delete ${b.name}`,
-                            value: `delete_branch_${b.id}`,
-                            emoji: '❌'
-                        }))
-                    ]);
+                    .addOptions(options);
 
                 const row = new ActionRowBuilder().addComponents(selectMenu);
                 
-                await interaction.reply({
+                /*await interaction.reply({
                     content: 'Manage Branches:',
                     components: [row],
                     flags: 64
-                });
+                });*/
+                await replyAndAutoDelete(interaction, 'Manage Branches:', { components: [row] , deleteDelay: 50000 });
             }
 
             // MANAGE RANKS
@@ -446,32 +459,121 @@ client.on('interactionCreate', async (interaction) => {
                 const branches = await db.getAllBranches();
                 
                 if (branches.length === 0) {
-                    await interaction.reply({ 
+                    /*await interaction.reply({ 
                         content: '❌ No branches yet. Create a branch first!', 
                         flags: 64 
-                    });
+                    });*/
+                    await replyAndAutoDelete(interaction, '❌ No branches yet. Create a branch first!', { deleteDelay: 5000 });
                     return;
                 }
+
+                // Validate branch emojis
+                const validatedBranches = validateBranchEmojis(branches);
+                
+                const options = validatedBranches.map(b => createOption(b.name, b.id.toString(), b.emoji));
 
                 const selectMenu = new StringSelectMenuBuilder()
                     .setCustomId('manage_ranks_select_branch')
                     .setPlaceholder('Select a branch')
-                    .addOptions(
-                        branches.map(b => ({
-                            label: b.name,
-                            value: b.id.toString(),
-                            emoji: b.emoji
-                        }))
-                    );
+                    .addOptions(options);
 
                 const row = new ActionRowBuilder().addComponents(selectMenu);
                 
-                await interaction.reply({
+               /*await interaction.reply({
                     content: 'Select a branch to manage its ranks:',
                     components: [row],
                     flags: 64
+                });*/
+                await replyAndAutoDelete(interaction, 'Select a branch to manage its ranks:', { components: [row] ,deleteDelay: 50000 });
+
+            }
+            else if (interaction.customId.startsWith('confirm_delete_branch_')) {
+                try {
+                    await interaction.deferUpdate();
+                    
+                    const branchId = parseInt(interaction.customId.replace('confirm_delete_branch_', ''));
+                    console.log('✅ Deleted branch ID:', branchId);
+                    
+                    const branch = await db.getBranch(branchId);
+                    
+                    await db.deleteBranch(branchId);
+                    
+                    try {
+                        const channel = await client.channels.fetch(process.env.ROSTER_CHANNEL_ID);
+                        const message = await channel.messages.fetch(branch.message_id);
+                        await message.delete();
+                    } catch (e) {
+                        // Message might not exist
+                    }
+                    
+                    // Use editReply, NOT update
+                    await interaction.editReply({
+                        content: `✅ Deleted branch **${branch.name}** and all its members`,
+                        components: []
+                    });
+                    
+                } catch (error) {
+                    console.error('Error in confirm delete branch:', error);
+                    try {
+                        await interaction.editReply({
+                            content: '❌ An error occurred while deleting the branch',
+                            components: []
+                        }).catch(() => {});
+                    } catch (e) {
+                        // Ignore
+                    }
+                }
+            }
+            
+            // CANCEL DELETE BRANCH
+           else if (interaction.customId && interaction.customId.includes('cancel_delete_branch')) {
+                try {
+                    await interaction.deferUpdate();
+                    
+                    await interaction.editReply({  // Changed from update to editReply
+                        content: '❌ Deletion cancelled.',
+                        components: []
+                    });
+                    
+                } catch (error) {
+                    console.error('Error in cancel button:', error);
+                }
+            }
+
+            // CONFIRM DELETE RANK
+            else if (interaction.customId.startsWith('confirm_delete_rank_')) {
+                const rankId = parseInt(interaction.customId.replace('confirm_delete_rank_', ''));
+                const rank = await db.getRank(rankId);
+                
+                await db.deleteRank(rankId);
+                await updateBranchMessage(rank.branch_id);
+                
+                await interaction.update({
+                    content: `✅ Deleted rank **${rank.name}**`,
+                    components: []
                 });
             }
+
+            // CANCEL DELETE RANK
+            else if (interaction.customId.startsWith('cancel_delete_rank_')) {
+                try {
+                    await interaction.update({
+                        content: '❌ Deletion cancelled.',
+                        components: []
+                    });
+                } catch (error) {
+                    console.error('Error cancelling deletion:', error);
+                }
+            }
+
+            // GENERIC CANCEL DELETE (backward compatibility)
+            else if (interaction.customId === 'cancel_delete') {
+                await interaction.update({
+                    content: '❌ Deletion cancelled',
+                    components: []
+                });
+            }
+
         }
 
         // ========== SELECT MENU HANDLERS ==========
@@ -495,10 +597,10 @@ client.on('interactionCreate', async (interaction) => {
 
                     const emojiInput = new TextInputBuilder()
                         .setCustomId('branch_emoji')
-                        .setLabel("Emoji")
+                        .setLabel("Emoji (optional)")
                         .setStyle(TextInputStyle.Short)
                         .setRequired(false)
-                        .setPlaceholder('🔴');
+                        .setPlaceholder('e.g., 🔴 (must be valid Discord emoji)');
 
                     modal.addComponents(
                         new ActionRowBuilder().addComponents(nameInput),
@@ -536,20 +638,15 @@ client.on('interactionCreate', async (interaction) => {
                         return;
                     }
 
+                    const options = [
+                        ...ranks.map(r => createOption(r.name, r.id.toString())),
+                        createOption('Create New Rank', 'new_rank', '➕')
+                    ];
+
                     const rankSelect = new StringSelectMenuBuilder()
                         .setCustomId('add_member_select_rank')
                         .setPlaceholder('Select a rank')
-                        .addOptions(
-                            ranks.map(r => ({
-                                label: r.name,
-                                value: r.id.toString()
-                            }))
-                        )
-                        .addOptions({
-                            label: '➕ Create New Rank',
-                            value: 'new_rank',
-                            emoji: '🆕'
-                        });
+                        .addOptions(options);
 
                     const row = new ActionRowBuilder().addComponents(rankSelect);
                     
@@ -594,17 +691,15 @@ client.on('interactionCreate', async (interaction) => {
                         
                         if (subBranches.length > 0) {
                             // Create sub-branch selection menu
+                            const options = [
+                                createOption('None (Main Branch)', 'none', '📌'),
+                                ...subBranches.map(sb => createOption(sb.name, sb.id.toString(), '📂'))
+                            ];
+
                             const subBranchSelect = new StringSelectMenuBuilder()
                                 .setCustomId('add_member_select_sub_branch')
                                 .setPlaceholder('Select a sub-branch (optional)')
-                                .addOptions([
-                                    { label: 'None (Main Branch)', value: 'none', emoji: '📌' },
-                                    ...subBranches.map(sb => ({
-                                        label: sb.name,
-                                        value: sb.id.toString(),
-                                        emoji: '📂'
-                                    }))
-                                ]);
+                                .addOptions(options);
 
                             const row = new ActionRowBuilder().addComponents(subBranchSelect);
                             
@@ -651,10 +746,11 @@ client.on('interactionCreate', async (interaction) => {
                 } catch (error) {
                     console.error('Error in rank selection:', error);
                     if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply({ 
+                      /*  await interaction.reply({ 
                             content: '❌ An error occurred. Please try again.',
                             flags: 64 
-                        });
+                        });*/
+                        await replyAndAutoDelete(interaction, '❌ An error occurred. Please try again.', { deleteDelay: 5000 });
                     }
                 }
             }
@@ -707,10 +803,11 @@ client.on('interactionCreate', async (interaction) => {
                 } catch (error) {
                     console.error('Error in sub-branch selection:', error);
                     if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply({ 
+                        /*await interaction.reply({ 
                             content: '❌ An error occurred. Please try again.',
                             flags: 64 
-                        });
+                        });*/
+                       await replyAndAutoDelete(interaction, '❌ An error occurred. Please try again.', { deleteDelay: 5000 });
                     }
                 }
             }
@@ -732,10 +829,10 @@ client.on('interactionCreate', async (interaction) => {
 
                     const emojiInput = new TextInputBuilder()
                         .setCustomId('emoji')
-                        .setLabel("Emoji")
+                        .setLabel("Emoji (optional)")
                         .setStyle(TextInputStyle.Short)
                         .setRequired(false)
-                        .setPlaceholder('🔴');
+                        .setPlaceholder('e.g., 🔴 (must be valid Discord emoji)');
 
                     modal.addComponents(
                         new ActionRowBuilder().addComponents(nameInput),
@@ -761,10 +858,10 @@ client.on('interactionCreate', async (interaction) => {
 
                     const emojiInput = new TextInputBuilder()
                         .setCustomId('emoji')
-                        .setLabel("Emoji")
+                        .setLabel("Emoji (optional)")
                         .setStyle(TextInputStyle.Short)
                         .setRequired(false)
-                        .setValue(branch.emoji);
+                        .setValue(branch.emoji || '📋');
 
                     modal.addComponents(
                         new ActionRowBuilder().addComponents(nameInput),
@@ -803,25 +900,12 @@ client.on('interactionCreate', async (interaction) => {
                     const branch = await db.getBranch(branchId);
                     const ranks = await db.getRanksByBranch(branchId);
                     
+                    // Build options
                     const options = [
-                        { label: '➕ Create New Rank', value: 'create_rank', emoji: '🆕' }
+                        createOption('Create New Rank', 'create_rank', '➕'),
+                        ...ranks.map(rank => createOption(`Edit ${rank.name}`, `edit_rank_${rank.id}`, '✏️')),
+                        ...ranks.map(rank => createOption(`Delete ${rank.name}`, `delete_rank_${rank.id}`, '❌'))
                     ];
-                    
-                    ranks.forEach(rank => {
-                        options.push({
-                            label: `✏️ Edit ${rank.name}`,
-                            value: `edit_rank_${rank.id}`,
-                            emoji: '📝'
-                        });
-                    });
-                    
-                    ranks.forEach(rank => {
-                        options.push({
-                            label: `🗑️ Delete ${rank.name}`,
-                            value: `delete_rank_${rank.id}`,
-                            emoji: '❌'
-                        });
-                    });
 
                     const selectMenu = new StringSelectMenuBuilder()
                         .setCustomId(`manage_ranks_select_action_${branchId}`)
@@ -830,18 +914,21 @@ client.on('interactionCreate', async (interaction) => {
 
                     const row = new ActionRowBuilder().addComponents(selectMenu);
                     
+                    const displayEmoji = sanitizeEmoji(branch.emoji, '📋');
+                    
                     await interaction.update({
-                        content: `**Managing ranks for ${branch.emoji} ${branch.name}**\nSelect an action:`,
+                        content: `**Managing ranks for ${displayEmoji} ${branch.name}**\nSelect an action:`,
                         components: [row]
                     });
                     
                 } catch (error) {
                     console.error('Error in manage ranks branch selection:', error);
                     if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply({ 
+                      /*  await interaction.reply({ 
                             content: '❌ An error occurred. Please try again.',
                             flags: 64 
-                        });
+                        });*/
+                          await replyAndAutoDelete(interaction, '❌ An error occurred. Please try again.', { deleteDelay: 5000 });
                     }
                 }
             }
@@ -914,7 +1001,10 @@ client.on('interactionCreate', async (interaction) => {
             if (interaction.customId === 'create_branch_for_member') {
                 try {
                     const name = interaction.fields.getTextInputValue('branch_name').toUpperCase();
-                    const emoji = interaction.fields.getTextInputValue('branch_emoji') || '📋';
+                    const emojiInput = interaction.fields.getTextInputValue('branch_emoji');
+                    
+                    // Sanitize the emoji
+                    const emoji = sanitizeEmoji(emojiInput, '📋');
                     
                     const branchId = await db.addBranch(name, emoji);
                     await updateBranchMessage(branchId);
@@ -935,17 +1025,19 @@ client.on('interactionCreate', async (interaction) => {
 
                     modal.addComponents(new ActionRowBuilder().addComponents(rankInput));
                     
-                    await interaction.reply({
-                        content: `✅ Created branch **${name}**!\n\nNow create the first rank:`,
+                   /* await interaction.reply({
+                        content: `✅ Created branch **${name}** ${emoji}!\n\nNow create the first rank:`,
                         flags: 64
-                    });
+                    });*/
+                     await replyAndAutoDelete(interaction, `✅ Created branch **${name}** ${emoji}!\n\nNow create the first rank:`, { deleteDelay: 50000 });
                     await interaction.showModal(modal);
                 } catch (error) {
                     console.error('Error in create_branch_for_member modal:', error);
-                    await interaction.reply({ 
+                   /* await interaction.reply({ 
                         content: '❌ Failed to create branch. Please try again.', 
                         flags: 64 
-                    });
+                    });*/
+                      await replyAndAutoDelete(interaction, '❌ Failed to create branch. Please try again.', { deleteDelay: 5000 });
                 }
             }
 
@@ -964,17 +1056,15 @@ client.on('interactionCreate', async (interaction) => {
                     
                     if (subBranches.length > 0) {
                         // Create sub-branch selection menu
+                        const options = [
+                            createOption('None (Main Branch)', 'none', '📌'),
+                            ...subBranches.map(sb => createOption(sb.name, sb.id.toString(), '📂'))
+                        ];
+
                         const subBranchSelect = new StringSelectMenuBuilder()
                             .setCustomId('add_member_select_sub_branch')
                             .setPlaceholder('Select a sub-branch (optional)')
-                            .addOptions([
-                                { label: 'None (Main Branch)', value: 'none', emoji: '📌' },
-                                ...subBranches.map(sb => ({
-                                    label: sb.name,
-                                    value: sb.id.toString(),
-                                    emoji: '📂'
-                                }))
-                            ]);
+                            .addOptions(options);
 
                         const row = new ActionRowBuilder().addComponents(subBranchSelect);
                         
@@ -1012,18 +1102,21 @@ client.on('interactionCreate', async (interaction) => {
                             new ActionRowBuilder().addComponents(titleInput)
                         );
 
-                        await interaction.reply({
+                      /*  await interaction.reply({
                             content: `✅ Created rank **${rankName}**!\n\nNow add member details:`,
                             flags: 64
-                        });
+                        });*/
+                         await replyAndAutoDelete(interaction, `✅ Created rank **${rankName}**!\n\nNow add member details:`, { deleteDelay: 50000 });
                         await interaction.showModal(modal);
                     }
                 } catch (error) {
                     console.error('Error in create_rank_for_member modal:', error);
-                    await interaction.reply({ 
+                  /*  await interaction.reply({ 
                         content: '❌ Failed to create rank. Please try again.', 
                         flags: 64 
-                    });
+                    });*/
+                      await replyAndAutoDelete(interaction, '❌ Failed to create rank. Please try again.', { deleteDelay: 5000 });
+                        await interaction.showModal(modal);
                 }
             }
 
@@ -1049,16 +1142,18 @@ client.on('interactionCreate', async (interaction) => {
                     
                     tempStore.delete(interaction.user.id);
                     
-                    await interaction.reply({
+                  /*  await interaction.reply({
                         content: `✅ Successfully added **${name}** to the roster!`,
                         flags: 64
-                    });
+                    });*/
+                    await replyAndAutoDelete(interaction, `✅ Successfully added **${name}** to the roster!`, { deleteDelay: 5000 });
                 } catch (error) {
                     console.error('Error in add_member_details modal:', error);
-                    await interaction.reply({ 
+                    /*await interaction.reply({ 
                         content: '❌ Failed to add member. Please try again.', 
                         flags: 64 
-                    });
+                    });*/
+                    await replyAndAutoDelete(interaction, '❌ Failed to add member. Please try again.', { deleteDelay: 5000 });
                 }
             }
 
@@ -1066,21 +1161,26 @@ client.on('interactionCreate', async (interaction) => {
             else if (interaction.customId === 'create_branch') {
                 try {
                     const name = interaction.fields.getTextInputValue('name').toUpperCase();
-                    const emoji = interaction.fields.getTextInputValue('emoji') || '📋';
+                    const emojiInput = interaction.fields.getTextInputValue('emoji');
+                    
+                    // Sanitize the emoji
+                    const emoji = sanitizeEmoji(emojiInput, '📋');
                     
                     const branchId = await db.addBranch(name, emoji);
                     await updateBranchMessage(branchId);
                     
-                    await interaction.reply({
+                   /* await interaction.reply({
                         content: `✅ Created branch **${name}** ${emoji}`,
                         flags: 64
-                    });
+                    });*/
+                      await replyAndAutoDelete(interaction, `✅ Created branch **${name}** ${emoji}`, { deleteDelay: 5000 });
                 } catch (error) {
                     console.error('Error in create_branch modal:', error);
-                    await interaction.reply({ 
+                   /* await interaction.reply({ 
                         content: '❌ Failed to create branch. Please try again.', 
                         flags: 64 
-                    });
+                    });*/
+                      await replyAndAutoDelete(interaction, '❌ Failed to create branch. Please try again.', { deleteDelay: 5000 });
                 }
             }
 
@@ -1089,21 +1189,26 @@ client.on('interactionCreate', async (interaction) => {
                 try {
                     const branchId = parseInt(interaction.customId.replace('edit_branch_', ''));
                     const name = interaction.fields.getTextInputValue('name').toUpperCase();
-                    const emoji = interaction.fields.getTextInputValue('emoji') || '📋';
+                    const emojiInput = interaction.fields.getTextInputValue('emoji');
+                    
+                    // Sanitize the emoji
+                    const emoji = sanitizeEmoji(emojiInput, '📋');
                     
                     await db.updateBranch(branchId, { name, emoji });
                     await updateBranchMessage(branchId);
                     
-                    await interaction.reply({
+                   /* await interaction.reply({
                         content: `✅ Updated branch to **${name}** ${emoji}`,
                         flags: 64
-                    });
+                    });*/
+                    await replyAndAutoDelete(interaction, `✅ Updated branch to **${name}** ${emoji}`, { deleteDelay: 5000 });
                 } catch (error) {
                     console.error('Error in edit_branch modal:', error);
-                    await interaction.reply({ 
+                 /*   await interaction.reply({ 
                         content: '❌ Failed to update branch. Please try again.', 
                         flags: 64 
-                    });
+                    });*/
+                    await replyAndAutoDelete(interaction, '❌ Failed to update branch. Please try again.', { deleteDelay: 5000 });
                 }
             }
 
@@ -1116,16 +1221,18 @@ client.on('interactionCreate', async (interaction) => {
                     await db.addRank(branchId, name);
                     await updateBranchMessage(branchId);
                     
-                    await interaction.reply({
+                   /* await interaction.reply({
                         content: `✅ Created rank **${name}**`,
                         flags: 64
-                    });
+                    });*/
+                     await replyAndAutoDelete(interaction, `✅ Created rank **${name}**`, { deleteDelay: 5000 });
                 } catch (error) {
                     console.error('Error in create_rank modal:', error);
-                    await interaction.reply({ 
+                   /* await interaction.reply({ 
                         content: '❌ Failed to create rank. Please try again.', 
                         flags: 64 
-                    });
+                    });*/
+                      await replyAndAutoDelete(interaction, '❌ Failed to create rank. Please try again.', { deleteDelay: 5000 });
                 }
             }
 
@@ -1139,16 +1246,18 @@ client.on('interactionCreate', async (interaction) => {
                     await db.updateRank(rankId, { name });
                     await updateBranchMessage(rank.branch_id);
                     
-                    await interaction.reply({
+                   /* await interaction.reply({
                         content: `✅ Updated rank to **${name}**`,
                         flags: 64
-                    });
+                    });*/
+                     await replyAndAutoDelete(interaction, `✅ Updated rank to **${name}**`, { deleteDelay: 5000 });
                 } catch (error) {
                     console.error('Error in edit_rank modal:', error);
-                    await interaction.reply({ 
+                   /* await interaction.reply({ 
                         content: '❌ Failed to update rank. Please try again.', 
                         flags: 64 
-                    });
+                    });*/
+                    await replyAndAutoDelete(interaction, '❌ Failed to update rank. Please try again.', { deleteDelay: 5000 });
                 }
             }
 
@@ -1156,25 +1265,49 @@ client.on('interactionCreate', async (interaction) => {
             else if (interaction.customId === 'remove_member_modal') {
                 await interaction.deferReply({ flags: 64 });
                 
-                const name = interaction.fields.getTextInputValue('member_name');
+                const name = interaction.fields.getTextInputValue('member_name').trim();
+                console.log(`Attempting to remove character: "${name}"`);
                 
                 try {
+                    // First, get the character to find its branch_id
                     const allCharacters = await db.getAllCharacters();
-                    const member = allCharacters.find(c => c.name === name);
+                    const member = allCharacters.find(c => 
+                        c.name.toLowerCase() === name.toLowerCase() ||
+                        c.name.toLowerCase().includes(name.toLowerCase())
+                    );
                     
                     if (!member) {
-                        await interaction.editReply({ content: `❌ Could not find **${name}**` });
+                        await interaction.editReply({ 
+                            content: `❌ Could not find **${name}** in the roster.` 
+                        });
                         return;
                     }
                     
-                    const changes = await db.removeCharacter(name);
+                    console.log(`Found character: ${member.name} (ID: ${member.id}) in branch ${member.branch_id}`);
                     
-                    if (changes > 0) {
+                    // Remove the character
+                    const result = await db.removeCharacter(member.name);
+                    console.log(`Remove character result:`, result);
+                    
+                    // Check if removal was successful (result > 0 OR result === true)
+                    if (result > 0 || result === true) {
                         await updateBranchMessage(member.branch_id);
-                        await interaction.editReply({ content: `✅ Removed **${name}** from roster` });
+                        await interaction.editReply({ content: `✅ Successfully removed **${member.name}** from roster` });
                     } else {
-                        await interaction.editReply({ content: `❌ Could not find **${name}**` });
+                        // Double-check if the character was actually deleted
+                        const checkAgain = await db.getAllCharacters();
+                        const stillExists = checkAgain.some(c => c.name === member.name);
+                        
+                        if (!stillExists) {
+                            console.log('Character was deleted despite result code, updating anyway');
+                            await updateBranchMessage(member.branch_id);
+                            await interaction.editReply({ content: `✅ Successfully removed **${member.name}** from roster` });
+                        } else {
+                            console.error(`Failed to remove character:`, result);
+                            await interaction.editReply({ content: `❌ Failed to remove **${member.name}**.` });
+                        }
                     }
+                    
                 } catch (error) {
                     console.error('Error removing member:', error);
                     await interaction.editReply({ content: '❌ An error occurred while removing the member' });
@@ -1183,11 +1316,13 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         // ========== CONFIRMATION BUTTONS ==========
-        else if (interaction.isButton()) {
-            
+        /*else if (interaction.isButton()) {
+            console.log('Button clicked with customId:', interaction.customId);
             // CONFIRM DELETE BRANCH
             if (interaction.customId.startsWith('confirm_delete_branch_')) {
+                await interaction.deferUpdate();
                 const branchId = parseInt(interaction.customId.replace('confirm_delete_branch_', ''));
+                console.log(branchId);
                 const branch = await db.getBranch(branchId);
                 
                 await db.deleteBranch(branchId);
@@ -1207,14 +1342,31 @@ client.on('interactionCreate', async (interaction) => {
             }
             
             // CANCEL DELETE BRANCH
-            else if (interaction.customId.startsWith('cancel_delete_branch_')) {
+            else if (interaction.customId && interaction.customId.includes('cancel_delete_branch')) {
                 try {
-                    await interaction.update({
+                    console.log('Cancel button clicked with ID:', interaction.customId);
+                    
+                    // First, acknowledge the interaction
+                    await interaction.deferUpdate();
+                    
+                    // Then edit the message
+                    await interaction.editReply({
                         content: '❌ Deletion cancelled.',
                         components: []
                     });
+                    
                 } catch (error) {
-                    console.error('Error cancelling deletion:', error);
+                    console.error('Error in cancel button:', error);
+                    
+                    // If deferUpdate failed, try direct update
+                    try {
+                        await interaction.update({
+                            content: '❌ Deletion cancelled.',
+                            components: []
+                        });
+                    } catch (updateError) {
+                        console.error('Update also failed:', updateError);
+                    }
                 }
             }
 
@@ -1251,14 +1403,15 @@ client.on('interactionCreate', async (interaction) => {
                     components: []
                 });
             }
-        }
+        }*/
     } catch (error) {
         console.error('Interaction error:', error);
         if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ 
+           /* await interaction.reply({ 
                 content: '❌ An error occurred. Please try again.', 
                 flags: 64 
-            }).catch(() => {});
+            }).catch(() => {});*/
+            await replyAndAutoDelete(interaction, '❌ An error occurred. Please try again.', { deleteDelay: 5000 }).catch(() => {});
         }
     }
 });
@@ -1279,5 +1432,30 @@ client.once('ready', async () => {
         console.error('❌ Failed to initialize bot:', error);
     }
 });
-
+// Add this helper function near the top of your file
+async function replyAndAutoDelete(interaction, content, options = {}) {
+    const deleteDelay = options.deleteDelay || 5000; // Default 10 seconds
+     const replyOptions = {
+        ...options,
+        flags: 64 // ephemeral
+    };
+    
+    if (typeof content === 'string') {
+        replyOptions.content = content;
+    } else {
+        // Handle when content is an object with embeds, etc.
+        Object.assign(replyOptions, content);
+    }
+    
+    const reply = await interaction.reply(replyOptions);
+    
+    // Auto-delete after delay
+    setTimeout(async () => {
+        try {
+            await interaction.deleteReply();
+        } catch (error) {
+            // Ignore errors if message already deleted
+        }
+    }, deleteDelay);
+}
 client.login(process.env.DISCORD_TOKEN);
