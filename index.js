@@ -1,10 +1,12 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, MessageFlags , ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 require('dotenv').config();
 
 const Database = require('./database.js');
 const init = require('./setup.js');
 const { isValidEmoji, sanitizeEmoji, createOption, validateBranchEmojis } = require('./emoji-utils.js');
-
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
 const db = new Database();
 
 const client = new Client({
@@ -17,7 +19,13 @@ const client = new Client({
 
 // Store temporary data for multi-step processes
 const tempStore = new Map();
+app.get('/', (req, res) => {
+    res.send('Discord bot is running!');
+});
 
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ HTTP server listening on port ${PORT}`);
+});
 // ========== ROSTER DISPLAY FUNCTIONS ==========
 
 async function updateBranchMessage(branchId) {
@@ -252,7 +260,7 @@ async function sendManagementPanel(channel) {
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (message.content === '!panel') {
-        // Check for officer role
+        // Check for officer permissions
         const hasPermission = 
             message.member.permissions.has('Administrator') ||
             message.member.permissions.has('ManageGuild') ||
@@ -262,7 +270,7 @@ client.on('messageCreate', async (message) => {
         if (!hasPermission) {
             return message.reply({ 
                 content: '❌ You need **Administrator** or **Manage Server** permissions to use this command!',
-                flags: 64
+                flags: MessageFlags.Ephemeral
             });
         }
         
@@ -308,24 +316,26 @@ client.on('messageCreate', async (message) => {
             await message.reply({ 
                 embeds: [panelEmbed], 
                 components: [row1], 
-                flags: 64
+                ephemeral: true // Fixed: Use the enum instead of raw value
             });
             
-            // Try to delete the command message, but don't crash if it fails
-            try {
-                await message.delete();
-                console.log('✅ Command message deleted');
-            } catch (deleteError) {
-                console.log('⚠️ Could not delete command message:', deleteError.message);
-            }
+            // Wait a moment before trying to delete the command message
+            setTimeout(async () => {
+                try {
+                    await message.delete();
+                    console.log('✅ Command message deleted');
+                } catch (deleteError) {
+                    console.log('⚠️ Could not delete command message:', deleteError.message);
+                }
+            }, 1000);
             
         } catch (error) {
             console.error('Error showing panel:', error);
             
             try {
-                await message.channel.send({ 
+                await message.reply({ 
                     content: '❌ An error occurred showing the panel.',
-                    flags: 64
+                    flags: MessageFlags.Ephemeral // Fixed here too
                 });
             } catch (sendError) {
                 console.error('Could not send error message:', sendError);
