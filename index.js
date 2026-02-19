@@ -253,12 +253,15 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (message.content === '!panel') {
         // Check for officer role
-        const officerRoles = ["Staff", "Guild Master", "Officer"];
-        const hasOfficerRole = message.member.roles.cache.some(role => officerRoles.includes(role.name));
+        const hasPermission = 
+            message.member.permissions.has('Administrator') ||
+            message.member.permissions.has('ManageGuild') ||
+            message.member.permissions.has('ManageRoles') ||
+            message.member.permissions.has('ManageChannels');
         
-        if (!hasOfficerRole) {
+        if (!hasPermission) {
             return message.reply({ 
-                content: '❌ You need an **Officer** role to use this command!',
+                content: '❌ You need **Administrator** or **Manage Server** permissions to use this command!',
                 flags: 64
             });
         }
