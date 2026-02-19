@@ -1,4 +1,5 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, MessageFlags , ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 require('dotenv').config();
 
 const Database = require('./database.js');
@@ -27,7 +28,27 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ HTTP server listening on port ${PORT}`);
 });
 // ========== ROSTER DISPLAY FUNCTIONS ==========
+async function registerCommands() {
+    const commands = [
+        new SlashCommandBuilder()
+            .setName('panel')
+            .setDescription('Open the staff roster panel')
+            .setDefaultMemberPermissions(0) // visible to everyone, but we enforce perms manually
+            .toJSON()
+    ];
 
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+    await rest.put(
+        Routes.applicationGuildCommands(
+            process.env.CLIENT_ID,
+            process.env.GUILD_ID
+        ),
+        { body: commands }
+    );
+
+    console.log('✅ Slash commands registered');
+}
 async function updateBranchMessage(branchId) {
     try {
         const branchData = await db.getBranchForDisplay(branchId);
@@ -257,88 +278,75 @@ async function sendManagementPanel(channel) {
 // ========== INTERACTION HANDLERS ==========
 
 // Command to show panel - ONLY visible to the staff member
-client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
-    if (message.content === '!panel') {
-        // Check for officer permissions
-        const hasPermission = 
-            message.member.permissions.has('Administrator') ||
-            message.member.permissions.has('ManageGuild') ||
-            message.member.permissions.has('ManageRoles') ||
-            message.member.permissions.has('ManageChannels');
-        
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === 'panel') {
+
+        // Permission check
+        const member = interaction.member;
+        const hasPermission =
+            member.permissions.has('Administrator') ||
+            member.permissions.has('ManageGuild') ||
+            member.permissions.has('ManageRoles') ||
+            member.permissions.has('ManageChannels');
+
         if (!hasPermission) {
-            return message.reply({ 
-                content: '❌ You need **Administrator** or **Manage Server** permissions to use this command!',
-                flags: MessageFlags.Ephemeral
+            return interaction.reply({
+                content: '❌ You need Administrator or Manage Server permissions.',
+                ephemeral: true
             });
         }
-        
+
         try {
             const branches = await db.getAllBranches();
-            
-            // Validate branch emojis
             const validatedBranches = validateBranchEmojis(branches);
 
-            const row1 = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('add_member_start')
-                        .setLabel('➕ Add Member')
-                        .setStyle(ButtonStyle.Success),
-                    new ButtonBuilder()
-                        .setCustomId('remove_member')
-                        .setLabel('✖️ Remove Member')
-                        .setStyle(ButtonStyle.Danger),
-                    new ButtonBuilder()
-                        .setCustomId('manage_branches')
-                        .setLabel('📁 Branches')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId('manage_ranks')
-                        .setLabel('📊 Ranks')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId('refresh_all')
-                        .setLabel('🔄 Refresh All')
-                        .setStyle(ButtonStyle.Secondary)
-                );
+            const row1 = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('add_member_start')
+                    .setLabel('➕ Add Member')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId('remove_member')
+                    .setLabel('✖️ Remove Member')
+                    .setStyle(ButtonStyle.Danger),
+                new ButtonBuilder()
+                    .setCustomId('manage_branches')
+                    .setLabel('📁 Branches')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('manage_ranks')
+                    .setLabel('📊 Ranks')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('refresh_all')
+                    .setLabel('🔄 Refresh All')
+                    .setStyle(ButtonStyle.Secondary)
+            );
 
             const panelEmbed = new EmbedBuilder()
                 .setColor('#990000')
                 .setTitle('🖥️ Roster Control Panel')
                 .setDescription('**Staff Only** - Click a button to manage the roster')
-                .addFields(
-                    { name: '📊 Current Branches', value: validatedBranches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None' }
-                );
+                .addFields({
+                    name: '📊 Current Branches',
+                    value: validatedBranches.map(b => `${b.emoji} ${b.name}`).join('\n') || 'None'
+                });
 
-            // Send the panel as an ephemeral reply
-            await message.reply({ 
-                embeds: [panelEmbed], 
-                components: [row1], 
-                ephemeral: true // Fixed: Use the enum instead of raw value
+            await interaction.reply({
+                embeds: [panelEmbed],
+                components: [row1],
+                ephemeral: true // 🔥 THIS is the magic
             });
-            
-            // Wait a moment before trying to delete the command message
-            setTimeout(async () => {
-                try {
-                    await message.delete();
-                    console.log('✅ Command message deleted');
-                } catch (deleteError) {
-                    console.log('⚠️ Could not delete command message:', deleteError.message);
-                }
-            }, 1000);
-            
+
         } catch (error) {
             console.error('Error showing panel:', error);
-            
-            try {
-                await message.reply({ 
-                    content: '❌ An error occurred showing the panel.',
-                    flags: MessageFlags.Ephemeral // Fixed here too
+            if (!interaction.replied) {
+                await interaction.reply({
+                    content: '❌ Failed to open panel.',
+                    ephemeral: true
                 });
-            } catch (sendError) {
-                console.error('Could not send error message:', sendError);
             }
         }
     }
@@ -1431,7 +1439,7 @@ client.on('interactionCreate', async (interaction) => {
 
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
-    
+     await registerCommands();
     try {
         await db.initialize();
         await init(db);
